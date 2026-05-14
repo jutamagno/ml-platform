@@ -151,19 +151,59 @@ Expected output from `run_full_cycle.py`:
 
 ---
 
-## File Structure
+## Integration with recsys-adtech
+
+`scripts/run_recsys_cycle.py` demonstrates the full integration between both projects: it generates auction events using `recsys-adtech`'s user/item pools and simulator, ingests them through ml-platform's event pipeline, trains a LightGBM PointwiseScorer and a DeepFM CTR model, and runs both through the staged deployment with automated rollback.
+
+```bash
+# Both repos must be siblings
+python scripts/run_recsys_cycle.py
+```
+
+---
+
+## File structure
 
 ```
 ml-platform/
 ├── src/
-│   ├── ingestor/        # EventIngestor, DeadLetterHandler, Pydantic schemas
-│   ├── feature_store/   # FeatureStore (Redis + Parquet), SkewDetector (PSI)
-│   ├── training/        # TrainingTrigger, TrainingJob, ModelAdapter protocol
-│   ├── registry/        # ModelRegistry — versioned artifacts + metrics
-│   ├── deployment/      # DeploymentEngine, RollbackMonitor, ServingProxy
-│   └── config.py        # All thresholds and constants in one place
-├── tests/               # One test file per component
+│   ├── ingestor/        EventIngestor, DeadLetterHandler, Pydantic schemas
+│   ├── feature_store/   FeatureStore (Redis + Parquet), SkewDetector (PSI)
+│   ├── training/        TrainingTrigger, TrainingJob, ModelAdapter protocol
+│   │                    recsys_adapters.py — LightGBM + DeepFM adapters for recsys-adtech
+│   ├── registry/        ModelRegistry — versioned artifacts + metrics history
+│   ├── deployment/      DeploymentEngine, RollbackMonitor, ServingProxy
+│   └── config.py        All thresholds and constants in one place
+├── tests/               One test file per component (10 files)
 ├── scripts/
-│   └── run_full_cycle.py
-└── docker-compose.yml   # Kafka + Redis
+│   ├── run_full_cycle.py       Generic lifecycle demo (synthetic events)
+│   ├── run_recsys_cycle.py     Integration with recsys-adtech
+│   └── benchmark.py            Throughput and latency benchmark
+└── docker-compose.yml          Kafka + Redis
 ```
+
+---
+
+## Running tests
+
+```bash
+# All tests (fakeredis + freezegun — no Docker required)
+pytest tests/ -v
+
+# With coverage
+pytest tests/ -v --cov=src --cov-report=term-missing
+```
+
+Tests cover: event ingestion and dead-letter handling, feature store PSI skew detection, training trigger (event-count and schedule-based), model registry versioning, deployment stage transitions, rollback monitor (AUC, error rate, p99 latency), serving proxy routing.
+
+---
+
+## Roadmap
+
+- [ ] **REST API** — expose deployment state, model registry, and rollback trigger via a FastAPI endpoint; currently all orchestration is programmatic
+- [ ] **Prometheus metrics** — instrument the serving proxy with request count, p99 latency, and error rate; feed RollbackMonitor from live Prometheus instead of simulated values
+- [ ] **Async training** — TrainingJob runs synchronously; make it async so the platform can handle concurrent training requests and queue new triggers while a job is running
+- [ ] **Model artifact storage** — ModelRegistry stores artifacts in a local directory; add an S3 backend (boto3 with LocalStack for local dev) so artifacts are durable
+- [ ] **Automated canary promotion** — CanaryMonitor currently checks metrics on demand; add a polling loop that auto-promotes from CANARY → FULL when online metrics are stable for `min_duration`
+- [ ] **Multi-model support** — the deployment engine assumes one model at a time; extend to support A/B between multiple challengers simultaneously with per-model traffic splits
+- [ ] **Helm chart** — Kubernetes deployment manifests for the serving proxy and training trigger as separate pods with HPA on the proxy
